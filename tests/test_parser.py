@@ -437,3 +437,142 @@ def test_unrecognized_lines_are_silent():
     parser = ArgyllParser()
     assert parser.feed("i1pro_getmisc: returning 634, 0x07d0") == []
     assert parser.feed("Some unknown diagnostic chatter") == []
+
+
+# --------------------------------------------------------------------------
+# 仪器档案与能力探测 (真机测试中发现的场景)
+# --------------------------------------------------------------------------
+
+INSTRUMENT_REPORT = """\
+Connecting to the instrument ..
+Instrument Type:   X-Rite i1 Pro 2
+Serial Number:     1070504
+Firmware version:  634
+CPLD version:      999
+Chip ID:           01-b476af1800004b
+Date manufactured: 20-16-720
+U.V. filter ?:     No
+Measure Ambient ?: Yes
+Tot. Measurement Count:           8599
+Remission Spot Count:             1790
+Remission Scan Count:             1891
+Total lamp usage:                 7243.096680
+"""
+
+
+def test_instrument_report_is_parsed():
+    events = [e for e in parse_text(INSTRUMENT_REPORT) if e["type"] == "instrument_info"]
+    fields = {e["field"]: e["value"] for e in events}
+
+    assert fields["model"] == "X-Rite i1 Pro 2"
+    assert fields["serial"] == "1070504"
+    assert fields["firmware"] == "634"
+    assert fields["lamp_hours"] == "7243.096680"
+    assert fields["total_measurements"] == "8599"
+
+
+def test_instrument_fields_carry_chinese_labels():
+    events = [e for e in parse_text(INSTRUMENT_REPORT) if e["type"] == "instrument_info"]
+    labels = {e["field"]: e["label"] for e in events}
+    assert labels["lamp_hours"] == "灯管累计使用(小时)"
+    assert labels["serial"] == "序列号"
+
+
+def test_uv_filter_capability_is_flagged():
+    """M1/M2 需要硬件 UV 滤镜 —— 界面据此禁用不可用的选项。"""
+    events = [e for e in parse_text(INSTRUMENT_REPORT) if e["type"] == "instrument_info"]
+    uv = next(e for e in events if e["field"] == "uv_filter")
+    assert uv["supports_uv_filter"] is False
+
+    supported = next(
+        e for e in parse_text("U.V. filter ?:     Yes\n") if e["type"] == "instrument_info"
+    )
+    assert supported["supports_uv_filter"] is True
+
+
+def test_unsupported_filter_error_is_actionable():
+    """真机实测: 无 UV 滤镜的 i1Pro2 选 M1 会直接退出, 提示必须说清怎么办。"""
+    event = first_of(
+        ArgyllParser().feed("Setting requested filter not supported by instrument"), "error"
+    )
+    assert event["severity"] == "warning"
+    assert "UV 滤镜" in event["message"]
+    assert "不指定" in event["message"]
+
+
+def test_instrument_lines_do_not_shadow_errors():
+    """错误匹配必须优先于宽松的"字段: 值"匹配。"""
+    event = first_of(
+        ArgyllParser().feed("Failed to initialise communications with instrument"), "error"
+    )
+    assert event["type"] == "error"
+
+
+def test_unknown_colon_lines_are_ignored():
+    """只有白名单内的字段才产出事件, 避免把调试输出也当成仪器档案。"""
+    parser = ArgyllParser()
+    assert parser.feed("i1pro_getmisc:   returning 634, 0x07d0") == []
+    assert parser.feed("Random Thing:    whatever") == []
+
+
+# --------------------------------------------------------------------------
+# 真实提示语 (原文取自二进制, 部分经真机确认)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "kind"),
+    [
+        # 真机实测的那一条 —— 早期正则按 "white calibration reference" 写, 匹配不到
+        ("Place the instrument on its reflective white reference S/N 1070504,", "calibrate_white"),
+        ("Place instrument on white reference spot,", "calibrate_white"),
+        ("Place the instrument on its transmissive white source,", "calibrate_transmissive"),
+        ("Place the instrument on light trap, or in the dark,", "calibrate_black"),
+        ("Place the instrument on black gloss reference", "calibrate_black"),
+        (
+            "Standard adapter should be fitted and instrument placed on calibration tile",
+            "calibrate_tile",
+        ),
+        ("Doing Lamp Drift check - place instrument on calibration tile", "calibrate_lamp"),
+        ("Place instrument on spot to be measured,", "measure"),
+        ("Place the instrument on a 100% white test patch,", "measure_patch"),
+        ("Place the instrument on a 80% white test patch,", "measure_patch"),
+        ("Place the instrument back on the test window", "return_to_display"),
+        (
+            "Place the instrument so as to measure ambient upwards, beside the display,",
+            "measure_ambient",
+        ),
+        ("Hit ESC or Q to exit, instrument switch or any other key to take a reading:", "ready"),
+        (" and then hit any key to continue,", "confirm"),
+        ("Hit Esc or Q to give up, any other key to retry:", "retry"),
+    ],
+)
+def test_real_prompt_strings(line, kind):
+    event = first_of(ArgyllParser().feed(line), "prompt")
+    assert event["kind"] == kind, f"{line!r} 应识别为 {kind}, 实得 {event['kind']}"
+
+
+def test_white_reference_out_of_tolerance():
+    """白板超差是实际使用中很常见的一条 —— 通常是白板脏了。"""
+    event = first_of(ArgyllParser().feed("White reference reading is out of tollerance"), "error")
+    assert event["severity"] == "warning"
+    assert "污渍" in event["message"]
+
+
+def test_calibration_prompt_beats_generic_confirm():
+    """具体的校准提示必须优先于通用的"按任意键"匹配。"""
+    line = "Place the instrument on its reflective white reference S/N 1070504, and then hit any key to continue,"
+    event = first_of(ArgyllParser().feed(line), "prompt")
+    assert event["kind"] == "calibrate_white"
+
+
+def test_ready_to_read_patch_yields_progress_not_prompt():
+    """ "Ready to read patch 12 of 500" 同时含提示与进度语义。
+
+    进度更有用 —— 它能直接驱动进度条, 而这一步 dispread 是自动读取的,
+    用户无需动手。因此让它落到 progress 而非 prompt。
+    """
+    events = ArgyllParser().feed("Ready to read patch 12 of 500 RGB 100.0 50.0 25.0")
+    progress = first_of(events, "progress")
+    assert (progress["current"], progress["total"]) == (12, 500)
+    assert not any(e["type"] == "prompt" for e in events)

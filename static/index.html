@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Color Workbench</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%232a78d6'/><path d='M16 3a13 13 0 000 26z' fill='%23eda100'/></svg>">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ================= 顶栏 ================= -->
+  <header class="topbar">
+    <div class="topbar__brand">
+      Color Workbench
+      <span class="topbar__version" id="argyll-version">—</span>
+    </div>
+
+    <div class="topbar__spacer"></div>
+
+    <span class="chip" id="chip-instrument" title="测量仪器状态">
+      <span class="chip__dot"></span><span id="chip-instrument-text">检测中…</span>
+    </span>
+    <span class="chip" id="chip-session" title="当前任务状态">
+      <span class="chip__dot"></span><span id="chip-session-text">空闲</span>
+    </span>
+
+    <button class="btn btn--sm" id="btn-refresh-devices" title="重新枚举设备">重新检测</button>
+    <button class="btn btn--sm" id="btn-theme" title="切换明暗主题" aria-label="切换主题">◐</button>
+  </header>
+
+  <!-- ================= 主体 ================= -->
+  <div class="main">
+
+    <nav class="sidebar" role="tablist" aria-label="功能导航">
+      <span class="sidebar__label">测量</span>
+      <button class="navitem" role="tab" data-panel="spot" aria-selected="true">
+        <span class="navitem__icon">◎</span>点测量
+      </button>
+      <button class="navitem" role="tab" data-panel="chart" aria-selected="false">
+        <span class="navitem__icon">▦</span>色卡扫描
+      </button>
+
+      <span class="sidebar__label">显示器</span>
+      <button class="navitem" role="tab" data-panel="display" aria-selected="false">
+        <span class="navitem__icon">▭</span>校准与 Profile
+      </button>
+
+      <span class="sidebar__label">数据</span>
+      <button class="navitem" role="tab" data-panel="files" aria-selected="false">
+        <span class="navitem__icon">▤</span>文件管理
+      </button>
+      <button class="navitem" role="tab" data-panel="about" aria-selected="false">
+        <span class="navitem__icon">◇</span>环境信息
+      </button>
+    </nav>
+
+    <main class="content">
+
+      <!-- ============ 点测量 ============ -->
+      <section class="panel" id="panel-spot" role="tabpanel">
+        <div class="panel__head">
+          <h1 class="panel__title">点测量</h1>
+          <p class="panel__desc">
+            用分光光度计逐点测量反射稿或屏幕。启动后按<kbd>空格</kbd>触发读数，
+            仪器侧面的按钮同样有效。
+          </p>
+        </div>
+
+        <div id="spot-banner"></div>
+
+        <div class="card">
+          <div class="card__title">测量参数</div>
+          <div class="grid grid--fields">
+            <label class="field">
+              <span class="field__label">仪器</span>
+              <select id="spot-instrument"></select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">测量模式</span>
+              <select id="spot-mode">
+                <option value="reflective" selected>反射稿</option>
+                <option value="emissive">发光 / 屏幕</option>
+                <option value="ambient">环境光</option>
+                <option value="transmissive">透射稿</option>
+              </select>
+            </label>
+
+            <label class="field" id="field-filter">
+              <span class="field__label">测量条件</span>
+              <select id="spot-filter">
+                <option value="" selected>不指定（仪器默认）</option>
+                <option value="M0" data-needs-filter="1">M0 — 无滤镜（仪器原生）</option>
+                <option value="M1" data-needs-filter="1">M1 — D50 含 UV（ISO 13655）</option>
+                <option value="M2" data-needs-filter="1">M2 — UV Cut（排除荧光增白）</option>
+                <option value="M3" data-needs-filter="1">M3 — 偏振滤镜</option>
+              </select>
+              <span class="field__hint" id="filter-hint">M1/M2 需要仪器配备 UV 滤镜硬件；测含荧光增白剂的纸张时三者 b* 差异明显</span>
+            </label>
+
+            <label class="field" id="field-displaytype" hidden>
+              <span class="field__label">显示技术</span>
+              <select id="spot-displaytype">
+                <option value="lcd" selected>LCD</option>
+                <option value="crt">CRT</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">计算光源</span>
+              <select id="spot-illuminant"></select>
+              <span class="field__hint">印刷业标准为 D50</span>
+            </label>
+
+            <label class="field">
+              <span class="field__label">观察者</span>
+              <select id="spot-observer"></select>
+            </label>
+          </div>
+
+          <div class="row" style="margin-top:12px">
+            <label class="check">
+              <input type="checkbox" id="spot-spectrum" checked>
+              <span class="small">输出光谱数据</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="spot-highres">
+              <span class="small">高分辨率光谱模式</span>
+            </label>
+          </div>
+
+          <div class="btnrow" style="margin-top:14px">
+            <button class="btn btn--primary" id="btn-spot-start">开始测量</button>
+            <button class="btn" id="btn-spot-measure" disabled>读取一次（空格）</button>
+            <button class="btn btn--danger" id="btn-spot-stop" disabled>停止</button>
+            <span class="small muted" id="spot-hint"></span>
+          </div>
+        </div>
+
+        <div class="grid grid--2">
+          <div class="card">
+            <div class="card__title">
+              最近读数
+              <span class="small muted" id="spot-reading-index"></span>
+            </div>
+            <div id="spot-readout">
+              <div class="empty">尚无读数</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__title">
+              光谱反射率
+              <button class="btn btn--sm" id="btn-clear-spectra" hidden>清除叠加</button>
+            </div>
+            <div class="chart" id="spectrum-chart">
+              <div class="chart__empty">测量后显示 380–730nm 光谱曲线</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__title">
+            测量历史
+            <span class="btnrow">
+              <button class="btn btn--sm" id="btn-export-csv" disabled>导出 CSV</button>
+              <button class="btn btn--sm" id="btn-clear-history" disabled>清空</button>
+            </span>
+          </div>
+          <div id="history-container">
+            <div class="empty">测量记录将在此累积，可导出为 CSV</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 色卡扫描 ============ -->
+      <section class="panel" id="panel-chart" role="tabpanel" hidden>
+        <div class="panel__head">
+          <h1 class="panel__title">色卡扫描</h1>
+          <p class="panel__desc">
+            读取实体色卡（需要事先准备好 <code>.ti2</code> 色卡定义文件），产出
+            <code>.ti3</code> 测量数据，可进一步生成打印机 Profile。
+          </p>
+        </div>
+
+        <div id="chart-banner"></div>
+
+        <div class="card">
+          <div class="card__title">扫描参数</div>
+          <div class="grid grid--fields">
+            <label class="field">
+              <span class="field__label">色卡定义文件</span>
+              <select id="chart-name"></select>
+              <span class="field__hint">来自 work/ 目录中的 .ti2 文件</span>
+            </label>
+
+            <label class="field">
+              <span class="field__label">仪器</span>
+              <select id="chart-instrument"></select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">测量条件</span>
+              <select id="chart-filter">
+                <option value="" selected>不指定（仪器默认）</option>
+                <option value="M0">M0 — 无滤镜</option>
+                <option value="M1">M1 — D50 含 UV</option>
+                <option value="M2">M2 — UV Cut</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row" style="margin-top:12px">
+            <label class="check">
+              <input type="checkbox" id="chart-strip">
+              <span class="small">条带扫描模式（滑过整行，比逐块快得多）</span>
+            </label>
+          </div>
+
+          <div class="btnrow" style="margin-top:14px">
+            <button class="btn btn--primary" id="btn-chart-start">开始扫描</button>
+            <button class="btn btn--danger" id="btn-chart-stop" disabled>停止</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__title">扫描进度</div>
+          <div id="chart-progress">
+            <div class="empty">未开始</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 显示器校准 ============ -->
+      <section class="panel" id="panel-display" role="tabpanel" hidden>
+        <div class="panel__head">
+          <h1 class="panel__title">显示器校准与 Profile</h1>
+          <p class="panel__desc">
+            完整链路：校准显示器 → 生成测试色块 → 读取色块 → 拟合 ICC Profile → 安装。
+            每一步的产物是下一步的输入，请按顺序执行。
+          </p>
+        </div>
+
+        <div id="display-banner"></div>
+
+        <div class="card">
+          <div class="card__title">基本设置</div>
+          <div class="grid grid--fields">
+            <label class="field">
+              <span class="field__label">目标显示器</span>
+              <select id="disp-display"></select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">仪器</span>
+              <select id="disp-instrument"></select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">Profile 名称</span>
+              <input type="text" id="disp-name" value="mydisplay" spellcheck="false">
+              <span class="field__hint">只允许字母数字与 . _ -</span>
+            </label>
+
+            <label class="field">
+              <span class="field__label">白点色温 (K)</span>
+              <input type="number" id="disp-temp" value="6500" min="2000" max="15000" step="50">
+              <span class="field__hint">留空则沿用显示器原生白点</span>
+            </label>
+
+            <label class="field">
+              <span class="field__label">目标亮度 (cd/m²)</span>
+              <input type="number" id="disp-brightness" placeholder="不强制" min="1" max="1000" step="5">
+              <span class="field__hint">印前常用 120，视环境照度而定</span>
+            </label>
+
+            <label class="field">
+              <span class="field__label">Gamma</span>
+              <input type="number" id="disp-gamma" value="2.2" min="0.5" max="4" step="0.1">
+            </label>
+
+            <label class="field">
+              <span class="field__label">校准质量</span>
+              <select id="disp-quality">
+                <option value="low">低（快）</option>
+                <option value="medium" selected>中</option>
+                <option value="high">高（慢）</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="field__label">测试色块数</span>
+              <input type="number" id="disp-patches" value="500" min="20" max="5000" step="50">
+              <span class="field__hint">400–1000 为常用区间</span>
+            </label>
+
+            <label class="field">
+              <span class="field__label">Profile 算法</span>
+              <select id="disp-algorithm">
+                <option value="shaper_matrix" selected>曲线 + 矩阵（显示器首选）</option>
+                <option value="gamma_matrix">单 Gamma + 矩阵（最省）</option>
+                <option value="lut">完整 LUT（最精确，体积大）</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row" style="margin-top:12px">
+            <label class="check">
+              <input type="checkbox" id="disp-interactive">
+              <span class="small">进入交互式调节（借助提示调整显示器 OSD 的亮度/RGB 增益）</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__title">
+            流程
+            <button class="btn btn--danger btn--sm" id="btn-disp-stop" disabled>停止当前步骤</button>
+          </div>
+          <div class="steps" id="display-steps"></div>
+          <div id="display-progress"></div>
+        </div>
+      </section>
+
+      <!-- ============ 文件管理 ============ -->
+      <section class="panel" id="panel-files" role="tabpanel" hidden>
+        <div class="panel__head">
+          <h1 class="panel__title">文件管理</h1>
+          <p class="panel__desc">
+            工作目录中的测量数据与 Profile。
+            <code>.ti1</code> 测试色块定义 ·
+            <code>.ti3</code> 测量结果 ·
+            <code>.cal</code> 校准曲线 ·
+            <code>.icc</code> 色彩配置文件
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card__title">
+            work/ 目录
+            <button class="btn btn--sm" id="btn-refresh-files">刷新</button>
+          </div>
+          <div id="files-container">
+            <div class="empty">加载中…</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 环境信息 ============ -->
+      <section class="panel" id="panel-about" role="tabpanel" hidden>
+        <div class="panel__head">
+          <h1 class="panel__title">环境信息</h1>
+          <p class="panel__desc">运行环境与工具链自检结果。</p>
+        </div>
+
+        <div class="card">
+          <div class="card__title">运行环境</div>
+          <div id="about-env" class="stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card__title">ArgyllCMS 工具链</div>
+          <div id="about-tools"></div>
+        </div>
+
+        <div class="card">
+          <div class="card__title">检测到的设备</div>
+          <div id="about-devices" class="stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card__title">仪器档案</div>
+          <div id="about-instrument">
+            <div class="empty">启动一次测量后，此处显示仪器自检信息（序列号、固件、灯管使用时长等）</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ================= 终端 ================= -->
+  <section class="console" id="console" data-collapsed="false">
+    <div class="console__head" id="console-head">
+      <span class="console__title">命令输出</span>
+      <span class="chip small" id="console-command">—</span>
+      <span class="console__spacer"></span>
+      <button class="btn btn--sm" id="btn-console-clear">清屏</button>
+      <button class="btn btn--sm" id="btn-console-toggle" aria-expanded="true">收起</button>
+    </div>
+
+    <pre class="console__body" id="console-body" aria-live="polite" aria-atomic="false"></pre>
+
+    <div class="keys">
+      <span class="keys__label">发送按键</span>
+      <button class="btn btn--sm keybtn" data-key="space">空格 · 测量</button>
+      <button class="btn btn--sm keybtn" data-key="enter">回车</button>
+      <button class="btn btn--sm keybtn" data-key="q">q · 退出</button>
+      <button class="btn btn--sm keybtn" data-key="esc">Esc</button>
+      <button class="btn btn--sm keybtn" data-key="h">h · 高分辨率</button>
+      <button class="btn btn--sm keybtn" data-key="k">k · 重新校准</button>
+      <button class="btn btn--sm keybtn" data-key="ctrl-c">Ctrl-C</button>
+      <span class="console__spacer"></span>
+      <span class="small muted">窗口聚焦时可直接敲键盘</span>
+    </div>
+  </section>
+
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

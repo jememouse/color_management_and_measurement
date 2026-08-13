@@ -87,6 +87,25 @@ sudo launchctl bootout gui/$(id -u)/com.xrite.i1Profiler.tray
 恢复：把 `disable` 换成 `enable`，`bootout` 换成
 `bootstrap gui/$(id -u) /Library/LaunchAgents/com.xrite.i1Profiler.tray.plist`。
 
+## 已知硬件约束
+
+**M0/M1/M2 测量条件需要仪器配备 UV 滤镜硬件。** 并非所有 i1 Pro 2 都带这个配件 ——
+启动测量时留意仪器自检信息里的这一行：
+
+```
+U.V. filter ?:     No        <- 没有滤镜硬件
+```
+
+若为 `No`，选择 M1/M2 会让 `spotread` 直接以
+`Setting requested filter not supported by instrument` 退出。界面会读取这一栏并自动
+禁用不可用的选项，测量条件请保持「不指定」。
+
+> 这一条是真机测试时撞出来的，不是从文档里读到的 —— ArgyllCMS 的用法说明里
+> `-F` 选项一直存在，它不会告诉你手上这台设备装没装滤镜。
+
+**灯管寿命**：仪器档案里的 `Total lamp usage` 是钨丝灯累计点亮时长。灯管老化会使
+蓝端能量下降，影响短波长测量精度。这个数字会显示在「环境信息 → 仪器档案」中。
+
 ## 项目结构
 
 ```

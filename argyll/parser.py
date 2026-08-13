@@ -118,20 +118,78 @@ RE_TARGET_BRIGHTNESS = re.compile(
 RE_WHITE_POINT_ERR = re.compile(rf"White point error\s*=\s*({_NUM})\s*deltaE")
 RE_BLACK_LEVEL = re.compile(rf"Black level\s*=\s*({_NUM})\s*cd/m\^2")
 
-#: 提示语 -> 语义类型。界面据此点亮对应的操作指引与按钮。
+#: 提示语 -> 语义类型。界面据此显示对应的中文操作指引。
+#:
+#: 这份表同样来自二进制里的原文, 而非凭印象拼写。真机测试时踩过一次:
+#: 按"white calibration reference"写的正则匹配不到实际的
+#: "Place the instrument on its **reflective** white reference S/N 1070504",
+#: 结果用户在校准环节看不到任何中文指引。
+#:
+#: 顺序敏感 —— 具体模式必须排在通用模式前面。
 PROMPT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"Place instrument on spot to be measured", re.I), "measure"),
+    # ---- 校准 ----
+    (re.compile(r"reflective white reference", re.I), "calibrate_white"),
+    (re.compile(r"white reference spot", re.I), "calibrate_white"),
     (re.compile(r"white calibration (?:reference|tile)", re.I), "calibrate_white"),
-    (re.compile(r"Place instrument on its calibration", re.I), "calibrate"),
-    (re.compile(r"Hit ESC or Q to exit", re.I), "ready"),
-    (re.compile(r"Place instrument on .*(?:black|dark)", re.I), "calibrate_black"),
-    (re.compile(r"Set instrument to .*position", re.I), "position"),
-    (re.compile(r"Please .*(?:press|hit) .*(?:key|button)", re.I), "confirm"),
+    (re.compile(r"transmissive white (?:source|reference)", re.I), "calibrate_transmissive"),
+    (re.compile(r"light trap|,\s*or in the dark", re.I), "calibrate_black"),
+    (re.compile(r"black gloss reference", re.I), "calibrate_black"),
+    (re.compile(r"Lamp Drift check", re.I), "calibrate_lamp"),
+    (re.compile(r"(?:place instrument on|placed on) calibration tile", re.I), "calibrate_tile"),
+    # ---- 测量 ----
+    (re.compile(r"Place instrument on spot to be measured", re.I), "measure"),
+    (re.compile(r"Place the instrument on a \d+%* white test patch", re.I), "measure_patch"),
+    (re.compile(r"Place the instrument back on the test window", re.I), "return_to_display"),
+    (re.compile(r"measure ambient upwards", re.I), "measure_ambient"),
+    (re.compile(r"Hit ESC or Q to exit.*take a reading", re.I), "ready"),
+    # ---- 通用确认 ----
+    (re.compile(r"and then hit any key to continue", re.I), "confirm"),
+    (re.compile(r"any other key to retry", re.I), "retry"),
     (re.compile(r"\(spacebar to continue\)", re.I), "confirm"),
 )
 
+#: 仪器自检信息 —— spotread -v 在连接成功后会打印一段设备档案。
+#:
+#: 这段信息很有价值: 灯管累计使用时长关系到测量精度(钨丝灯老化会导致
+#: 蓝端能量下降), 而 "U.V. filter" 一栏直接决定 M1/M2 测量条件能否使用。
+INSTRUMENT_FIELDS: dict[str, tuple[str, str]] = {
+    "Instrument Type": ("model", "型号"),
+    "Serial Number": ("serial", "序列号"),
+    "Firmware version": ("firmware", "固件版本"),
+    "CPLD version": ("cpld", "CPLD 版本"),
+    "Chip ID": ("chip_id", "芯片 ID"),
+    "Date manufactured": ("manufactured", "生产日期"),
+    "U.V. filter ?": ("uv_filter", "UV 滤镜"),
+    "Measure Ambient ?": ("ambient_capable", "环境光测量"),
+    "Tot. Measurement Count": ("total_measurements", "累计测量次数"),
+    "Remission Spot Count": ("reflective_spots", "反射点测次数"),
+    "Remission Scan Count": ("reflective_scans", "反射扫描次数"),
+    "Emission Spot Count": ("emissive_spots", "发光点测次数"),
+    "Total lamp usage": ("lamp_hours", "灯管累计使用(小时)"),
+}
+
+RE_INSTRUMENT_FIELD = re.compile(r"^\s*([A-Za-z][A-Za-z.\s]*[A-Za-z?])\s*:\s{2,}(.+?)\s*$")
+
 #: 错误与告警。severity 决定界面是红色横幅还是黄色提示。
 ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"Setting requested filter not supported|filter not supported by instrument", re.I
+        ),
+        "warning",
+        "该仪器不支持所选测量条件 —— M1/M2 需要仪器配备 UV 滤镜硬件, "
+        "请把测量条件改为「不指定」后重试",
+    ),
+    (
+        re.compile(r"Setting calibration standard not supported", re.I),
+        "warning",
+        "该仪器不支持所选的校准标准, 请使用默认设置",
+    ),
+    (
+        re.compile(r"doesn't support it|doesn't have .* capability", re.I),
+        "warning",
+        "仪器不具备该功能, 相关设置已被忽略",
+    ),
     (
         re.compile(r"Device being used|kIOReturnExclusiveAccess|0xe00002c5", re.I),
         "error",
@@ -152,6 +210,24 @@ ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
         re.compile(r"needs a calibration before continuing", re.I),
         "warning",
         "需要先校准 —— 把仪器扣在白色校准底座上",
+    ),
+    (
+        re.compile(
+            r"White reference (?:reading )?is out of toll?erance|Checking white reference failed",
+            re.I,
+        ),
+        "warning",
+        "白板校准读数超出容差 —— 校准白板可能有污渍或划痕, 也可能是仪器未完全扣紧底座",
+    ),
+    (
+        re.compile(r"Transmission white reference is (?:out of range|too low)", re.I),
+        "warning",
+        "透射白参考超出范围 —— 检查透射光源亮度与仪器位置",
+    ),
+    (
+        re.compile(r"scan white reference is not bright enough", re.I),
+        "warning",
+        "扫描白参考亮度不足 —— 检查校准底座是否洁净",
     ),
     (re.compile(r"No such file or directory|not found", re.I), "error", "文件或工具不存在"),
     (re.compile(r"Got abort or error from calibration", re.I), "error", "校准被中止或失败"),
@@ -225,6 +301,7 @@ class ArgyllParser:
             self._match_dispcal,
             self._match_profile_check,
             self._match_error,
+            self._match_instrument_info,
             self._match_prompt,
         ):
             event = handler(line)
@@ -486,6 +563,32 @@ class ArgyllParser:
                     "raw": line.strip(),
                 }
         return None
+
+    def _match_instrument_info(self, line: str) -> dict[str, Any] | None:
+        """解析仪器自检档案(spotread -v 连接成功后打印)。
+
+        必须放在错误匹配之后: 这里的正则相对宽松, 先让明确的错误模式挑走,
+        剩下的才按"字段: 值"处理。
+        """
+        m = RE_INSTRUMENT_FIELD.match(line)
+        if not m:
+            return None
+
+        key = m.group(1).strip()
+        mapping = INSTRUMENT_FIELDS.get(key)
+        if mapping is None:
+            return None
+
+        field, label = mapping
+        value = m.group(2).strip()
+        return {
+            "type": "instrument_info",
+            "field": field,
+            "label": label,
+            "value": value,
+            # UV 滤镜能力直接决定 M1/M2 可用与否, 单独标出来给界面用
+            "supports_uv_filter": value.lower().startswith("y") if field == "uv_filter" else None,
+        }
 
     def _match_prompt(self, line: str) -> dict[str, Any] | None:
         for pattern, kind in PROMPT_PATTERNS:  # type: ignore[misc]
