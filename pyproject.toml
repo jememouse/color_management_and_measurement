@@ -27,7 +27,7 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "PTH", "C4"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "PTH", "C4", "BLE"]
 ignore = [
     "E501",    # 行长由 formatter 处理
     "RUF001",  # 允许中文全角标点出现在字符串中
