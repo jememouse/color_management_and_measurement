@@ -1,0 +1,47 @@
+[project]
+name = "color-workbench"
+version = "0.1.0"
+description = "基于 ArgyllCMS 的色彩管理与测量工作台 —— 为 X-Rite i1 Pro 2 等分光光度计提供 Web 交互界面"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "wang", email = "jememouse@gmail.com" }]
+keywords = ["color-management", "argyllcms", "spectrophotometer", "icc-profile", "i1pro"]
+
+# 运行时零第三方依赖 —— 全部基于 Python 标准库(pty / http.server / json)。
+# 这是刻意的设计决定: 色彩测量工具常需在无网络的产线机器上部署,
+# 少一个依赖就少一个装不上的理由。
+dependencies = []
+
+[project.scripts]
+color-workbench = "server:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "pytest>=8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "PTH", "C4"]
+ignore = [
+    "E501",    # 行长由 formatter 处理
+    "RUF001",  # 允许中文全角标点出现在字符串中
+    "RUF002",
+    "RUF003",
+    "S104",    # 绑定 0.0.0.0 由用户通过 I1_HOST 显式选择
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # 测试中允许 assert
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

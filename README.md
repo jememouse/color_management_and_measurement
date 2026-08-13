@@ -1,0 +1,126 @@
+# Color Workbench
+
+基于 [ArgyllCMS](https://www.argyllcms.com/) 的色彩管理与测量工作台，为 X-Rite i1 Pro 2
+等分光光度计提供浏览器交互界面。
+
+把 ArgyllCMS 那套强大但交互笨拙的命令行工具（`spotread` / `dispcal` / `colprof` …）
+包装成可视化流程：实时光谱曲线、一键校准、显示器 ICC profile 全链路生成。
+
+---
+
+## 为什么是「本地服务 + 浏览器」
+
+浏览器无法直接访问分光光度计。WebUSB 在 macOS 上无法接管已被系统驱动
+（X-Rite 的 `xrdd`）注册的设备，且 i1Pro2 的通信协议复杂（EEPROM 解析、暗电流校准、
+自适应积分时间），重新实现一遍不现实。
+
+所以架构必然是：
+
+```
+浏览器 (前端)
+   │  HTTP + SSE
+   ▼
+本地 Python 服务 (server.py)
+   │  pty (伪终端)
+   ▼
+ArgyllCMS CLI (spotread / dispcal / …)
+   │  USB (IOKit)
+   ▼
+X-Rite i1 Pro 2
+```
+
+**关键难点在 pty 这一层**：ArgyllCMS 的工具是交互式 TTY 程序，会把终端切到 raw 模式
+读取单个按键（不带回车），普通的 `subprocess.PIPE` 会让它报
+`tcgetattr failed with 'Operation not supported by device'` 并拒绝工作。必须用
+`pty.fork()` 分配真正的伪终端。
+
+## 环境要求
+
+| 组件 | 版本 | 说明 |
+|---|---|---|
+| macOS | 12+ | Linux 理论可用，未测试 |
+| Python | 3.13+ | 由 uv 管理，见 `.python-version` |
+| ArgyllCMS | 3.x | `brew install argyll-cms` |
+| uv | 0.9+ | 包与环境管理 |
+
+**运行时零第三方依赖** —— 全部基于 Python 标准库（`pty` / `http.server` / `json`）。
+这是刻意的设计决定：色彩测量工具常需部署在无网络的产线机器上，少一个依赖就少一个装不上的理由。
+`uv` 只用于锁定 Python 版本和管理开发工具（ruff / pytest）。
+
+## 快速开始
+
+```bash
+# 1. 安装 ArgyllCMS
+brew install argyll-cms
+
+# 2. 同步环境（首次运行会自动下载 Python 3.13）
+uv sync --group dev
+
+# 3. 环境自检 —— 确认能找到 ArgyllCMS 与全部工具
+uv run python config.py
+
+# 4. 启动服务
+uv run python server.py
+```
+
+浏览器打开 <http://127.0.0.1:8721>。
+
+环境变量覆盖：
+
+```bash
+I1_PORT=9000 uv run python server.py       # 换端口
+ARGYLL_BIN=/opt/Argyll/bin uv run python server.py   # 指定 ArgyllCMS 位置
+```
+
+## 与 X-Rite 官方软件的共存
+
+ArgyllCMS 与 X-Rite 的 `xrdd` 守护进程**可以共存**（`xrdd` 不独占 USB 句柄），
+但 **i1Profiler 主程序运行时会独占设备**，此时本工作台无法连接，反之亦然。
+
+如果 `i1ProfilerTray` 后台进程占用 CPU 异常，可永久禁用其开机自启（可逆）：
+
+```bash
+sudo launchctl disable gui/$(id -u)/com.xrite.i1Profiler.tray
+sudo launchctl bootout gui/$(id -u)/com.xrite.i1Profiler.tray
+```
+
+恢复：把 `disable` 换成 `enable`，`bootout` 换成
+`bootstrap gui/$(id -u) /Library/LaunchAgents/com.xrite.i1Profiler.tray.plist`。
+
+## 项目结构
+
+```
+.
+├── config.py           # 全局配置、ArgyllCMS 探测、工具白名单
+├── server.py           # HTTP + SSE 服务，路由层
+├── argyll/
+│   ├── session.py      # pty 会话内核 —— 驱动交互式 CLI
+│   ├── parser.py       # 输出解析：XYZ / Lab / 光谱 / 进度
+│   └── tools.py        # 各工具的命令构建与参数校验
+├── static/             # 前端（原生 HTML/CSS/JS，无构建步骤）
+├── work/               # 运行时产物：.ti1 / .ti3 / .cal / .icc
+├── docs/               # 测量原理与流程说明
+└── tests/              # pytest
+```
+
+## 安全边界
+
+服务默认只监听 `127.0.0.1`。即便如此，浏览器里的任意页面都可能向 localhost 发起
+跨站请求，因此：
+
+- **工具白名单**：只有 `config.ALLOWED_TOOLS` 中的可执行文件允许被 spawn
+- **不经过 shell**：使用 `os.execv` 直接执行，参数不做 shell 解析，无注入面
+- **绝对路径**：工具路径来自启动时探测的结果，避免 PATH 劫持
+- **工作目录限制**：文件读写限制在 `work/` 内，路径经 `resolve()` 后校验前缀
+
+## 开发
+
+```bash
+uv run ruff check .          # lint（含 bandit 安全规则）
+uv run ruff format .         # 格式化
+uv run pytest                # 测试
+```
+
+## 许可
+
+MIT
