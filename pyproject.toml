@@ -11,7 +11,9 @@ keywords = ["color-management", "argyllcms", "spectrophotometer", "icc-profile",
 # 运行时零第三方依赖 —— 全部基于 Python 标准库(pty / http.server / json)。
 # 这是刻意的设计决定: 色彩测量工具常需在无网络的产线机器上部署,
 # 少一个依赖就少一个装不上的理由。
-dependencies = []
+dependencies = [
+    "pywinpty>=1.1.0; sys_platform == 'win32'",
+]
 
 [project.scripts]
 color-workbench = "server:main"
