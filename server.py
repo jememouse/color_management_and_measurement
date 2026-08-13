@@ -551,7 +551,16 @@ def main() -> int:
     server = make_server()
     host, port = server.server_address[:2]
 
+    stopping = threading.Event()
+
     def shutdown(signum: int, frame: Any) -> None:
+        # 幂等: 一次 Ctrl-C 可能触发多次。终端把 SIGINT 发给整个前台进程组,
+        # 而包装进程(uv run / launchd)通常还会再转发一份, 于是同一个 handler
+        # 被连着调用两次 —— 表现为重复打印"正在停止", 并多起一个 shutdown 线程。
+        # Event.set() 是原子的, 且信号 handler 只在主线程执行, 这里不存在竞态。
+        if stopping.is_set():
+            return
+        stopping.set()
         # 必须先停会话: 否则 dispcal 拉起的全屏测试窗口会留在屏幕上关不掉
         print("\n正在停止...", file=sys.stderr)
         session_mod.manager.shutdown()

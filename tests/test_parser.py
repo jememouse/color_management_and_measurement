@@ -594,9 +594,10 @@ def test_light_level_too_low_gives_ordered_checklist():
 
     assert event["severity"] == "warning"
     assert "光强不足" in event["message"]
-    assert "扣紧" in event["message"]  # 第一优先级排查项
+    # 扩散帽排在首位 —— 它比"没扣紧"更隐蔽: 帽子装着时仪器看起来仍能正常放进底座
+    assert "扩散帽" in event["message"]
+    assert event["message"].index("扩散帽") < event["message"].index("校准底座")
     assert "污渍" in event["message"]
-    assert "灯管老化" in event["message"]
 
 
 def test_light_level_too_high():

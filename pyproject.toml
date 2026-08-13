@@ -1,6 +1,6 @@
 [project]
 name = "color-workbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "基于 ArgyllCMS 的色彩管理与测量工作台 —— 为 X-Rite i1 Pro 2 等分光光度计提供 Web 交互界面"
 readme = "README.md"
 requires-python = ">=3.13"

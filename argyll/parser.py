@@ -273,9 +273,12 @@ ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (
         re.compile(r"Light level is too low|peak magnitude too low", re.I),
         "warning",
-        "校准光强不足 —— 依次检查: ①仪器是否完全扣紧校准底座(需推到卡住) "
-        "②白板有无污渍指纹(用吹气球或无绒布轻擦) ③探头是否正对白板; "
-        "若均正常, 可能是灯管老化",
+        "校准光强不足 —— 按顺序检查: "
+        "①测量口上是否套着环境光扩散帽/适配器(反射测量必须取下, 这是最易被忽略的一条) "
+        "②仪器是否完全扣进校准底座并推到卡住 "
+        "③白板有无污渍指纹(用吹气球或无绒布轻擦) "
+        "④测量口是否正对白板; "
+        "仍未解决可运行 diagnose_light.py 读取传感器原始光强",
     ),
     (
         re.compile(r"Light level is too high", re.I),

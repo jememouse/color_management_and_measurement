@@ -53,21 +53,31 @@ X-Rite i1 Pro 2
 # 1. 安装 ArgyllCMS
 brew install argyll-cms
 
-# 2. 同步环境（首次运行会自动下载 Python 3.13）
-uv sync --group dev
-
-# 3. 环境自检 —— 确认能找到 ArgyllCMS 与全部工具
-uv run python config.py
-
-# 4. 启动服务
-uv run python server.py
+# 2. 启动（自动完成环境同步、自检、开浏览器）
+./start.sh
 ```
 
-浏览器打开 <http://127.0.0.1:8721>。
+`start.sh` 在拉起服务前会依次检查 uv、端口占用、USB 上的 X-Rite 设备、
+以及会抢占仪器的 i1Profiler 进程，任何一项不对都直接给出可执行的修复命令。
+服务就绪后自动打开 <http://127.0.0.1:8721>。
 
-环境变量覆盖：
+常用选项：
 
 ```bash
+./start.sh --check            # 只做环境自检, 打印完整报告后退出(装机后先跑这个)
+./start.sh --port 9000        # 换端口
+./start.sh --restart          # 端口上有旧实例时, 先优雅停掉再启动
+./start.sh --no-browser       # 不自动开浏览器
+./start.sh --no-sync          # 跳过 uv sync(离线机器)
+./start.sh --argyll-bin /opt/Argyll/bin   # 指定 ArgyllCMS 安装位置
+```
+
+也可以绕过脚本直接跑，环境变量与上述选项等价：
+
+```bash
+uv sync --group dev
+uv run python config.py                    # 环境自检
+uv run python server.py                    # 启动
 I1_PORT=9000 uv run python server.py       # 换端口
 ARGYLL_BIN=/opt/Argyll/bin uv run python server.py   # 指定 ArgyllCMS 位置
 ```
