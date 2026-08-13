@@ -320,18 +320,20 @@ function onSpectrum(event) {
 /**
  * 仪器档案。
  *
- * 除了展示, 还有一个实际作用: 根据 U.V. filter 一栏禁用 M1/M2 选项。
- * 实测发现未配 UV 滤镜的 i1Pro2 一旦选了 M1, spotread 会直接以
- * "Setting requested filter not supported" 退出 —— 与其让用户撞一次墙,
- * 不如在界面上先把不可用的选项关掉。
+ * 除了展示, 还有两个实际作用:
+ *   1. 按 "U.V. filter" 一栏禁用 M1/M2 —— 实测发现未配滤镜的 i1Pro2 一旦选了
+ *      M1, spotread 会直接以 "Setting requested filter not supported" 退出。
+ *      与其让用户撞一次墙, 不如在界面上先把不可用的选项关掉。
+ *   2. 灯管累计点亮时长决定测量可信度, 需要在显眼处给出结论而非原始秒数。
  */
 function onInstrumentInfo(event) {
-  state.instrument[event.field] = { label: event.label, value: event.value };
+  state.instrument[event.field] = event;
 
   if (event.field === 'uv_filter') {
     applyFilterCapability(event.supports_uv_filter === true);
   }
-  renderInstrumentCard();
+  renderHardwareStatus();
+  renderInstrumentArchive();
 }
 
 function applyFilterCapability(supported) {
@@ -353,18 +355,128 @@ function applyFilterCapability(supported) {
   }
 }
 
-function renderInstrumentCard() {
-  const entries = Object.entries(state.instrument);
-  if (!entries.length) return;
+const STATUS_ICON = { good: '✓', warning: '!', serious: '▲', critical: '✕' };
 
-  const rows = entries
-    .map(([, info]) => `<tr><td>${escapeHtml(info.label)}</td><td class="mono">${escapeHtml(info.value)}</td></tr>`)
+function tile({ label, value, note, level, small }) {
+  const cls = level ? ` hwstat--${level}` : '';
+  const icon = level && STATUS_ICON[level] ? `<span aria-hidden="true">${STATUS_ICON[level]}</span> ` : '';
+  return `
+    <div class="hwstat${cls}">
+      <div class="hwstat__label">${icon}${escapeHtml(label)}</div>
+      <div class="hwstat__value${small ? ' hwstat__value--sm' : ''}">${escapeHtml(value)}</div>
+      ${note ? `<div class="hwstat__note">${escapeHtml(note)}</div>` : ''}
+    </div>`;
+}
+
+/** 点测量页顶部的紧凑状态条 —— 只放动手前需要知道的几项。 */
+function renderHardwareStatus() {
+  const inst = state.instrument;
+  if (!inst.model && !inst.serial) return;
+
+  const tiles = [];
+
+  if (inst.model) {
+    tiles.push(tile({
+      label: '仪器',
+      value: inst.model.value,
+      note: inst.serial ? `S/N ${inst.serial.value}` : '',
+      small: true,
+    }));
+  }
+
+  // 灯管: 显示结论而非原始秒数
+  if (inst.lamp_usage?.lamp) {
+    const L = inst.lamp_usage.lamp;
+    tiles.push(tile({
+      label: '灯管累计点亮',
+      value: L.display,
+      note: L.text,
+      level: L.level,
+    }));
+  }
+
+  if (inst.total_measurements) {
+    const parts = [];
+    if (inst.reflective_spots) parts.push(`反射点测 ${inst.reflective_spots.value}`);
+    if (inst.reflective_scans) parts.push(`扫描 ${inst.reflective_scans.value}`);
+    tiles.push(tile({
+      label: '累计测量',
+      value: `${inst.total_measurements.value} 次`,
+      note: parts.join(' · '),
+    }));
+  }
+
+  if (inst.uv_filter) {
+    const ok = inst.uv_filter.supports_uv_filter === true;
+    tiles.push(tile({
+      label: 'UV 滤镜',
+      value: ok ? '已配备' : '未配备',
+      note: ok ? 'M0–M3 测量条件可用' : 'M0–M3 不可用，请用「不指定」',
+      level: ok ? 'good' : 'warning',
+    }));
+  }
+
+  // 从未校准过时明确提示 —— 新设备或换过 EEPROM 的设备会是这样
+  const cal = inst.last_reflective_cal;
+  if (cal) {
+    tiles.push(tile({
+      label: '上次反射校准',
+      value: cal.never_calibrated ? '无记录' : cal.value,
+      note: cal.never_calibrated ? '仪器内无校准记录，每次启动都会要求校准' : '',
+      level: cal.never_calibrated ? 'warning' : 'good',
+      small: true,
+    }));
+  }
+
+  $('hw-stats').innerHTML = tiles.join('');
+  $('hw-card').hidden = tiles.length === 0;
+
+  const summary = [];
+  if (inst.firmware) summary.push(`固件 ${inst.firmware.value}`);
+  if (inst.manufactured) summary.push(`产于 ${inst.manufactured.value}`);
+  $('hw-summary').textContent = summary.join(' · ');
+}
+
+const GROUP_TITLE = {
+  identity: '身份',
+  capability: '能力',
+  usage: '使用状况',
+  calibration: '校准记录',
+};
+
+/** 环境信息页的完整档案, 按 group 分区。 */
+function renderInstrumentArchive() {
+  const byGroup = {};
+  for (const event of Object.values(state.instrument)) {
+    (byGroup[event.group] ||= []).push(event);
+  }
+  if (!Object.keys(byGroup).length) return;
+
+  const sections = Object.entries(GROUP_TITLE)
+    .filter(([key]) => byGroup[key])
+    .map(([key, title]) => {
+      const rows = byGroup[key]
+        .map((e) => {
+          let extra = '';
+          if (e.lamp) extra = ` <span class="muted">（${escapeHtml(e.lamp.display)} · ${escapeHtml(e.lamp.text)}）</span>`;
+          if (e.never_calibrated) extra = ' <span class="muted">（无记录）</span>';
+          return `<tr><td>${escapeHtml(e.label)}</td><td class="mono">${escapeHtml(e.value)}${extra}</td></tr>`;
+        })
+        .join('');
+      return `
+        <div class="hwgroup">
+          <div class="hwgroup__title">${title}</div>
+          <div class="tablewrap"><table><tbody>${rows}</tbody></table></div>
+        </div>`;
+    })
     .join('');
 
-  const host = $('about-instrument');
-  if (host) {
-    host.innerHTML = `<div class="tablewrap"><table><tbody>${rows}</tbody></table></div>`;
-  }
+  const lamp = state.instrument.lamp_usage?.lamp;
+  const footnote = lamp
+    ? `<p class="small muted" style="margin:12px 0 0">灯管时长单位为秒（原始值 ${lamp.seconds}），${escapeHtml(lamp.note)}。</p>`
+    : '';
+
+  $('about-instrument').innerHTML = sections + footnote;
 }
 
 function onAmbient(event) {

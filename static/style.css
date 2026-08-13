@@ -950,3 +950,70 @@ kbd {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   硬件状态磁贴
+
+   状态色只作辅助 —— 每块磁贴都同时带文字结论与图标, 颜色从不单独表意。
+   这既是无障碍要求, 也因为本工具的用户天然对颜色敏感, 不该让界面颜色
+   承担需要精确判读的信息。
+   ========================================================================== */
+
+.hwstats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 12px;
+}
+
+.hwstat {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  border-left-width: 3px;
+  border-left-color: var(--border-strong);
+  min-width: 0;
+}
+
+.hwstat--good { border-left-color: var(--good); }
+.hwstat--warning { border-left-color: var(--warning); }
+.hwstat--serious { border-left-color: var(--serious); }
+.hwstat--critical { border-left-color: var(--critical); }
+
+.hwstat__label {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hwstat__value {
+  margin-top: 3px;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-primary);
+  overflow-wrap: anywhere;
+}
+
+.hwstat__value--sm { font-size: 13px; font-weight: 500; }
+
+.hwstat__note {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ink-secondary);
+}
+
+.hwgroup + .hwgroup { margin-top: 14px; }
+
+.hwgroup__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 7px;
+}

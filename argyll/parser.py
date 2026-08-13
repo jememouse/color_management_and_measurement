@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
@@ -144,29 +145,81 @@ PROMPT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"Hit ESC or Q to exit.*take a reading", re.I), "ready"),
     # ---- 通用确认 ----
     (re.compile(r"and then hit any key to continue", re.I), "confirm"),
-    (re.compile(r"any other key to retry", re.I), "retry"),
+    (re.compile(r"key to retry|to give up, any other key", re.I), "retry"),
     (re.compile(r"\(spacebar to continue\)", re.I), "confirm"),
 )
 
 #: 仪器自检信息 —— spotread -v 在连接成功后会打印一段设备档案。
 #:
-#: 这段信息很有价值: 灯管累计使用时长关系到测量精度(钨丝灯老化会导致
-#: 蓝端能量下降), 而 "U.V. filter" 一栏直接决定 M1/M2 测量条件能否使用。
-INSTRUMENT_FIELDS: dict[str, tuple[str, str]] = {
-    "Instrument Type": ("model", "型号"),
-    "Serial Number": ("serial", "序列号"),
-    "Firmware version": ("firmware", "固件版本"),
-    "CPLD version": ("cpld", "CPLD 版本"),
-    "Chip ID": ("chip_id", "芯片 ID"),
-    "Date manufactured": ("manufactured", "生产日期"),
-    "U.V. filter ?": ("uv_filter", "UV 滤镜"),
-    "Measure Ambient ?": ("ambient_capable", "环境光测量"),
-    "Tot. Measurement Count": ("total_measurements", "累计测量次数"),
-    "Remission Spot Count": ("reflective_spots", "反射点测次数"),
-    "Remission Scan Count": ("reflective_scans", "反射扫描次数"),
-    "Emission Spot Count": ("emissive_spots", "发光点测次数"),
-    "Total lamp usage": ("lamp_hours", "灯管累计使用(小时)"),
+#: 分组用于界面上的分区展示: identity(身份) / capability(能力) /
+#: usage(使用状况) / calibration(校准记录)。
+INSTRUMENT_FIELDS: dict[str, tuple[str, str, str]] = {
+    # 身份
+    "Instrument Type": ("model", "型号", "identity"),
+    "Serial Number": ("serial", "序列号", "identity"),
+    "Firmware version": ("firmware", "固件版本", "identity"),
+    "CPLD version": ("cpld", "CPLD 版本", "identity"),
+    "Chip ID": ("chip_id", "芯片 ID", "identity"),
+    "Date manufactured": ("manufactured", "生产日期", "identity"),
+    # 能力
+    "U.V. filter ?": ("uv_filter", "UV 滤镜", "capability"),
+    "Measure Ambient ?": ("ambient_capable", "环境光测量", "capability"),
+    # 使用状况
+    "Tot. Measurement Count": ("total_measurements", "累计测量次数", "usage"),
+    "Remission Spot Count": ("reflective_spots", "反射点测", "usage"),
+    "Remission Scan Count": ("reflective_scans", "反射扫描", "usage"),
+    "Emission Spot Count": ("emissive_spots", "发光点测", "usage"),
+    "Total lamp usage": ("lamp_usage", "灯管累计点亮", "usage"),
+    # 校准记录
+    "Date of last Remission spot cal": ("last_reflective_cal", "上次反射校准", "calibration"),
+    "Remission Spot Count at last cal": ("spots_at_last_cal", "上次校准时测量数", "calibration"),
+    "Date of last Emission spot cal": ("last_emissive_cal", "上次发光校准", "calibration"),
+    "Date of last Transmission spot cal": ("last_transmissive_cal", "上次透射校准", "calibration"),
 }
+
+
+def _format_duration(seconds: float) -> str:
+    """把秒数格式化成人能读的时长。"""
+    if seconds < 60:
+        return f"{seconds:.0f} 秒"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f} 分钟"
+    return f"{seconds / 3600:.2f} 小时"
+
+
+def assess_lamp(seconds: float) -> dict[str, Any]:
+    """按灯管累计点亮时长给出健康参考。
+
+    **单位是秒, 不是小时**。这一点极易搞错: 7243 这个数字乍看像"小时",
+    但结合累计测量次数一除就露馅了 —— 8599 次测量对应 7243 秒, 即每次点亮
+    0.84 秒, 正是 i1Pro 一次反射测量的积分时间量级; 若当成小时, 就成了每次
+    测量点灯 50 分钟, 显然荒谬。
+
+    需要说明的是: **X-Rite 未公开 i1Pro 灯管的额定寿命**, 下面的分档只是
+    按卤钨灯的一般经验给出的参考, 不是厂商规格。真正权威的判断来自仪器
+    自己报告的 "Lamp is weak" / "Lamp has failed", 那两条会以告警形式
+    单独出现。
+    """
+    hours = seconds / 3600.0
+
+    if hours < 50:
+        level, text = "good", "良好"
+    elif hours < 200:
+        level, text = "good", "正常"
+    elif hours < 500:
+        level, text = "warning", "使用较多, 建议关注短波长测量一致性"
+    else:
+        level, text = "serious", "使用量很大, 建议送检或考虑更换灯管"
+
+    return {
+        "seconds": seconds,
+        "hours": hours,
+        "display": _format_duration(seconds),
+        "level": level,
+        "text": text,
+        "note": "X-Rite 未公开额定寿命, 此分档仅为卤钨灯一般经验参考",
+    }
+
 
 RE_INSTRUMENT_FIELD = re.compile(r"^\s*([A-Za-z][A-Za-z.\s]*[A-Za-z?])\s*:\s{2,}(.+?)\s*$")
 
@@ -211,6 +264,59 @@ ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "warning",
         "需要先校准 —— 把仪器扣在白色校准底座上",
     ),
+    # ---- 光强类: 实际使用中最常撞到的一组 ----
+    #
+    # 完整错误形如:
+    #   Calibration failed with 'Measurement misread' (Light level is too low)
+    # "Light level" 比 "misread" 具体得多, 必须排在前面, 否则用户只会看到
+    # 一句无从下手的"读数无效"。
+    (
+        re.compile(r"Light level is too low|peak magnitude too low", re.I),
+        "warning",
+        "校准光强不足 —— 依次检查: ①仪器是否完全扣紧校准底座(需推到卡住) "
+        "②白板有无污渍指纹(用吹气球或无绒布轻擦) ③探头是否正对白板; "
+        "若均正常, 可能是灯管老化",
+    ),
+    (
+        re.compile(r"Light level is too high", re.I),
+        "warning",
+        "校准光强过高 —— 通常是有外部光线漏入, 请确认仪器已完全扣入底座并避开强光直射",
+    ),
+    (
+        re.compile(r"Black calibration values are too high", re.I),
+        "warning",
+        "暗电流校准值偏高 —— 有杂散光漏入, 请确认仪器已扣紧且处于遮光状态",
+    ),
+    (
+        re.compile(r"Wavelength calibration reading is too low", re.I),
+        "warning",
+        "波长校准读数偏低 —— 光路可能被遮挡, 或灯管输出不足",
+    ),
+    # ---- 灯管健康 ----
+    #
+    # 钨丝灯老化会让蓝端能量先衰减, 表现为短波长测量不准。
+    # 这几条是仪器自己给出的判断, 比累计使用时长更有参考价值。
+    (
+        re.compile(r"Lamp has failed|Lamp failure|Lamp failed during reading", re.I),
+        "error",
+        "仪器灯管已失效 —— 需要送修更换, 此状态下的测量结果不可用",
+    ),
+    (
+        re.compile(r"Lamp is weak|Lamp marginal", re.I),
+        "warning",
+        "仪器判定灯管已衰弱 —— 短波长(蓝端)测量精度会下降, 建议安排送检或更换",
+    ),
+    (
+        re.compile(r"Reflectance lamp error|Transmission lamp error", re.I),
+        "error",
+        "灯管工作异常 —— 请重新插拔 USB 后重试, 若持续出现需送修",
+    ),
+    # ---- 电量 ----
+    (
+        re.compile(r"Battery (?:level )?too low", re.I),
+        "warning",
+        "仪器电量不足 —— 请连接 USB 充电后再测量",
+    ),
     (
         re.compile(
             r"White reference (?:reading )?is out of toll?erance|Checking white reference failed",
@@ -218,6 +324,11 @@ ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
         ),
         "warning",
         "白板校准读数超出容差 —— 校准白板可能有污渍或划痕, 也可能是仪器未完全扣紧底座",
+    ),
+    (
+        re.compile(r"Calibration failed with|Measurement misread", re.I),
+        "warning",
+        "校准读数无效 —— 请确认仪器已扣紧校准底座且保持静止, 然后按空格重试",
     ),
     (
         re.compile(r"Transmission white reference is (?:out of range|too low)", re.I),
@@ -579,16 +690,31 @@ class ArgyllParser:
         if mapping is None:
             return None
 
-        field, label = mapping
+        field, label, group = mapping
         value = m.group(2).strip()
-        return {
+
+        event: dict[str, Any] = {
             "type": "instrument_info",
             "field": field,
             "label": label,
+            "group": group,
             "value": value,
-            # UV 滤镜能力直接决定 M1/M2 可用与否, 单独标出来给界面用
-            "supports_uv_filter": value.lower().startswith("y") if field == "uv_filter" else None,
         }
+
+        # UV 滤镜能力直接决定 M1/M2 可用与否, 单独标出来给界面用
+        if field == "uv_filter":
+            event["supports_uv_filter"] = value.lower().startswith("y")
+
+        # 灯管时长附上换算与健康评估, 免得前端再实现一遍单位判断
+        if field == "lamp_usage":
+            with contextlib.suppress(ValueError):
+                event["lamp"] = assess_lamp(float(value))
+
+        # 从未校准过的设备, EEPROM 里是 Unix 纪元起点
+        if field.startswith("last_") and "1970" in value:
+            event["never_calibrated"] = True
+
+        return event
 
     def _match_prompt(self, line: str) -> dict[str, Any] | None:
         for pattern, kind in PROMPT_PATTERNS:  # type: ignore[misc]

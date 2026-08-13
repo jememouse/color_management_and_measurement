@@ -71,6 +71,14 @@
 
         <div id="spot-banner"></div>
 
+        <div class="card" id="hw-card" hidden>
+          <div class="card__title">
+            仪器状态
+            <span class="small muted" id="hw-summary"></span>
+          </div>
+          <div class="hwstats" id="hw-stats"></div>
+        </div>
+
         <div class="card">
           <div class="card__title">测量参数</div>
           <div class="grid grid--fields">
@@ -374,7 +382,7 @@
         <div class="card">
           <div class="card__title">仪器档案</div>
           <div id="about-instrument">
-            <div class="empty">启动一次测量后，此处显示仪器自检信息（序列号、固件、灯管使用时长等）</div>
+            <div class="empty">启动一次测量后，此处显示完整仪器档案（身份、能力、使用状况、校准记录）</div>
           </div>
         </div>
       </section>

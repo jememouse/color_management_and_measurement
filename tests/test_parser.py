@@ -467,14 +467,14 @@ def test_instrument_report_is_parsed():
     assert fields["model"] == "X-Rite i1 Pro 2"
     assert fields["serial"] == "1070504"
     assert fields["firmware"] == "634"
-    assert fields["lamp_hours"] == "7243.096680"
+    assert fields["lamp_usage"] == "7243.096680"
     assert fields["total_measurements"] == "8599"
 
 
 def test_instrument_fields_carry_chinese_labels():
     events = [e for e in parse_text(INSTRUMENT_REPORT) if e["type"] == "instrument_info"]
     labels = {e["field"]: e["label"] for e in events}
-    assert labels["lamp_hours"] == "灯管累计使用(小时)"
+    assert labels["lamp_usage"] == "灯管累计点亮"
     assert labels["serial"] == "序列号"
 
 
@@ -576,3 +576,153 @@ def test_ready_to_read_patch_yields_progress_not_prompt():
     progress = first_of(events, "progress")
     assert (progress["current"], progress["total"]) == (12, 500)
     assert not any(e["type"] == "prompt" for e in events)
+
+
+# --------------------------------------------------------------------------
+# 光强与灯管故障 (实际使用中遇到)
+# --------------------------------------------------------------------------
+
+
+def test_light_level_too_low_gives_ordered_checklist():
+    """实际报错原文: Calibration failed with 'Measurement misread' (Light level is too low)
+
+    这一行同时命中"光强不足"和"读数无效"两条规则。光强那条具体得多,
+    必须优先 —— 否则用户只看到一句"读数无效", 完全不知道该动哪里。
+    """
+    line = "Calibration failed with 'Measurement misread' (Light level is too low)"
+    event = first_of(ArgyllParser().feed(line), "error")
+
+    assert event["severity"] == "warning"
+    assert "光强不足" in event["message"]
+    assert "扣紧" in event["message"]  # 第一优先级排查项
+    assert "污渍" in event["message"]
+    assert "灯管老化" in event["message"]
+
+
+def test_light_level_too_high():
+    event = first_of(ArgyllParser().feed("Light level is too high"), "error")
+    assert "漏入" in event["message"]
+
+
+def test_bare_misread_still_handled():
+    """不带光强说明的 misread 也要有可操作提示。"""
+    event = first_of(ArgyllParser().feed("Calibration failed with 'Measurement misread'"), "error")
+    assert event["severity"] == "warning"
+    assert "重试" in event["message"]
+
+
+@pytest.mark.parametrize(
+    ("line", "severity", "keyword"),
+    [
+        ("Lamp has failed", "error", "失效"),
+        ("Lamp failure", "error", "失效"),
+        ("Lamp is weak", "warning", "衰弱"),
+        ("Lamp marginal", "warning", "衰弱"),
+        ("Reflectance lamp error", "error", "异常"),
+        ("Battery level too low to measure, Charge battery", "warning", "电量"),
+        ("Black calibration values are too high", "warning", "杂散光"),
+    ],
+)
+def test_hardware_fault_messages(line, severity, keyword):
+    event = first_of(ArgyllParser().feed(line), "error")
+    assert event["severity"] == severity
+    assert keyword in event["message"]
+
+
+def test_lamp_failure_is_error_not_warning():
+    """灯管失效意味着数据不可用, 不能只给个黄色提示放过去。"""
+    failed = first_of(ArgyllParser().feed("Lamp has failed"), "error")
+    weak = first_of(ArgyllParser().feed("Lamp is weak"), "error")
+    assert failed["severity"] == "error"
+    assert weak["severity"] == "warning"
+
+
+def test_retry_prompt_real_wording():
+    """真实原文是 "Hit any key to retry", 早期模式按 "any other key to retry" 写, 匹配不到。"""
+    event = first_of(ArgyllParser().feed("Hit any key to retry, or Esc or Q to abort:"), "prompt")
+    assert event["kind"] == "retry"
+
+
+# --------------------------------------------------------------------------
+# 灯管时长: 单位与健康评估
+# --------------------------------------------------------------------------
+
+
+def test_lamp_usage_unit_is_seconds_not_hours():
+    """**单位是秒**。
+
+    7243.09 这个值乍看像"小时", 但结合累计测量次数一除就露馅:
+    8599 次测量 / 7243 秒 = 每次点亮 0.84 秒, 正是 i1Pro 一次反射测量的
+    积分时间量级; 若当成小时, 就成了每次测量点灯 50 分钟, 显然不成立。
+
+    这条测试把这个换算钉死 —— 搞错单位会让用户误以为灯管接近报废。
+    """
+    from argyll.parser import assess_lamp
+
+    result = assess_lamp(7243.096680)
+    assert result["seconds"] == pytest.approx(7243.09668)
+    assert result["hours"] == pytest.approx(2.012, abs=0.01)
+    assert "小时" in result["display"]
+    assert result["level"] == "good"
+
+
+@pytest.mark.parametrize(
+    ("seconds", "level"),
+    [
+        (60, "good"),  # 1 分钟
+        (3600 * 10, "good"),  # 10 小时
+        (3600 * 100, "good"),  # 100 小时
+        (3600 * 300, "warning"),  # 300 小时
+        (3600 * 800, "serious"),  # 800 小时
+    ],
+)
+def test_lamp_health_thresholds(seconds, level):
+    from argyll.parser import assess_lamp
+
+    assert assess_lamp(seconds)["level"] == level
+
+
+def test_lamp_assessment_admits_uncertainty():
+    """X-Rite 未公开额定寿命 —— 界面上必须说明这只是经验参考, 不能冒充规格。"""
+    from argyll.parser import assess_lamp
+
+    assert "未公开" in assess_lamp(3600)["note"]
+
+
+def test_lamp_duration_formatting():
+    from argyll.parser import assess_lamp
+
+    assert "秒" in assess_lamp(45)["display"]
+    assert "分钟" in assess_lamp(600)["display"]
+    assert "小时" in assess_lamp(7200)["display"]
+
+
+def test_instrument_event_carries_lamp_assessment():
+    event = first_of(
+        ArgyllParser().feed("Total lamp usage:                 7243.096680"), "instrument_info"
+    )
+    assert "lamp" in event
+    assert event["lamp"]["level"] == "good"
+
+
+def test_instrument_fields_are_grouped():
+    """界面按 group 分区展示, 每个字段都必须归好组。"""
+    events = [e for e in parse_text(INSTRUMENT_REPORT) if e["type"] == "instrument_info"]
+    groups = {e["group"] for e in events}
+    assert groups <= {"identity", "capability", "usage", "calibration"}
+    assert "identity" in groups
+    assert "usage" in groups
+
+
+def test_never_calibrated_is_flagged():
+    """EEPROM 里的 1970 纪元起点表示从未校准过, 不能当成一个真实日期显示。"""
+    line = "Date of last Remission spot cal:  Thu Jan  1 08:00:00 1970"
+    event = first_of(ArgyllParser().feed(line), "instrument_info")
+    assert event["never_calibrated"] is True
+    assert event["group"] == "calibration"
+
+
+def test_real_calibration_date_is_not_flagged():
+    line = "Date of last Remission spot cal:  Mon Aug 12 14:30:00 2026"
+    event = first_of(ArgyllParser().feed(line), "instrument_info")
+    assert "never_calibrated" not in event
